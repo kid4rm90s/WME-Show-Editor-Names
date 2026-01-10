@@ -32,6 +32,7 @@
     let editorLabels = {};
     let updateInterval;
     let missingUsers = new Set(); // Cache for users not found in W.model.users
+    let tooltipTriggered = new Set(); // Track which users we've triggered tooltips for
     let debugMode = true; // Set to true to see detailed logs
     let settings = {
         enabled: true // Show usernames by default
@@ -278,6 +279,7 @@
                 eventHandler: () => {
                     // Clear missing users cache when new data loads
                     missingUsers.clear();
+                    tooltipTriggered.clear(); // Clear tooltip trigger tracking
                     log('Map data loaded - clearing missing users cache');
                     updateEditorLabels();
                 }
@@ -365,9 +367,13 @@
             // Find all online editor markers in the DOM (excluding saved places)
             const allMarkers = document.querySelectorAll('.onlineEditorMarker--rHUxm, .map-marker[data-id]');
             const editorMarkers = Array.from(allMarkers).filter(marker => {
-                // Exclude saved places markers
+                // Exclude saved places markers and other non-editor markers
                 const classes = marker.className || '';
-                return !classes.includes('saved-places') && !classes.includes('savedPlace');
+                if (classes.includes('saved-places') || classes.includes('savedPlace')) {
+                    return false;
+                }
+                // Only include markers with onlineEditorMarker class
+                return classes.includes('onlineEditorMarker');
             });
             
             log(`Found ${editorMarkers.length} editor markers (${allMarkers.length} total markers)`);
@@ -414,42 +420,113 @@
                 return null;
             }
 
-            // Skip if we've already tried and failed to find this user
+            // Skip if we've already tried and failed to find this user (no logging)
             if (missingUsers.has(userId)) {
                 return null;
             }
 
-            // Use W.model.users to get editor information
-            // Note: WME SDK doesn't have DataModel.Users, so we use W object
-            if (!W || !W.model || !W.model.users) {
-                log('W.model.users not available');
-                return null;
+            // Try to get info from W.controller.users
+            if (W && W.controller && W.controller.users) {
+                try {
+                    const user = W.controller.users.getObjectById(parseInt(userId));
+                    if (user && user.attributes) {
+                        const username = user.attributes.userName || user.attributes.username;
+                        const rank = user.attributes.rank ?? 0;
+                        const level = rank + 1;
+                        log(`Found user via W.controller.users: ${username} (ID: ${userId}, Level: ${level})`);
+                        return {
+                            username: username,
+                            userId: userId,
+                            rank: rank,
+                            level: level
+                        };
+                    }
+                } catch (e) {
+                    // Not available
+                }
             }
 
-            // Find the user by ID
-            const user = W.model.users.getObjectById(userId);
-            if (user && user.attributes) {
-                const username = user.attributes.userName || user.attributes.username;
-                const rank = user.attributes.rank || 0; // rank is 0-indexed (0=L1, 1=L2, etc.)
-                const level = rank + 1; // Convert to level (1-6)
-                log(`Found user: ${username} (ID: ${userId}, Level: ${level})`);
-                return {
-                    username: username,
-                    userId: userId,
-                    rank: rank,
-                    level: level
-                };
-            } else {
-                // Add to cache to prevent repeated lookups
-                missingUsers.add(userId);
-                log(`User not found in W.model.users for ID: ${userId} (cached)`);
+            // Fallback: Use W.model.users to get editor information
+            if (W && W.model && W.model.users) {
+                const user = W.model.users.getObjectById(parseInt(userId));
+                if (user && user.attributes) {
+                    const username = user.attributes.userName || user.attributes.username;
+                    const rank = user.attributes.rank ?? 0;
+                    const level = rank + 1;
+                    log(`Found user via W.model.users: ${username} (ID: ${userId}, Level: ${level})`);
+                    return {
+                        username: username,
+                        userId: userId,
+                        rank: rank,
+                        level: level
+                    };
+                }
             }
 
-            return null;
+            // Try to extract level from the SVG image filename
+            const img = markerElement.querySelector('img[src*="/L"]');
+            let level = 1;
+            if (img && img.src) {
+                const levelMatch = img.src.match(/\/L(\d+)\.svg/);
+                if (levelMatch) {
+                    level = parseInt(levelMatch[1]);
+                }
+            }
+            
+            // Try to trigger tooltip to load user data (only once per user per session)
+            if (!tooltipTriggered.has(userId)) {
+                tooltipTriggered.add(userId);
+                triggerTooltipForUser(markerElement, userId);
+                log(`First time seeing user ${userId}, triggering tooltip to load data`);
+            }
+            
+            // Return a placeholder with the extracted level
+            // Don't cache this user so we keep trying to find the real username
+            return {
+                username: `User ${userId}`,
+                userId: userId,
+                rank: level - 1,
+                level: level,
+                isPlaceholder: true
+            };
+
         } catch (error) {
             logError(`Error getting editor info from marker: ${error.message}`);
             console.error(error);
             return null;
+        }
+    }
+
+    // Trigger tooltip to load user data
+    function triggerTooltipForUser(markerElement, userId) {
+        try {
+            // Find the tooltip target element
+            const tooltipTarget = markerElement.querySelector('wz-tooltip-target');
+            if (tooltipTarget) {
+                // Dispatch a mouseenter event to trigger the tooltip
+                const mouseEnterEvent = new MouseEvent('mouseenter', {
+                    bubbles: true,
+                    cancelable: true,
+                    view: window
+                });
+                tooltipTarget.dispatchEvent(mouseEnterEvent);
+                
+                // Keep tooltip open longer to give WME time to load data
+                setTimeout(() => {
+                    const mouseLeaveEvent = new MouseEvent('mouseleave', {
+                        bubbles: true,
+                        cancelable: true,
+                        view: window
+                    });
+                    tooltipTarget.dispatchEvent(mouseLeaveEvent);
+                }, 500); // Increased from 100ms to 500ms
+                
+                log(`Triggered tooltip for user ${userId}`);
+            } else {
+                log(`No tooltip target found for user ${userId}`);
+            }
+        } catch (e) {
+            logError(`Error triggering tooltip for user ${userId}: ${e.message}`);
         }
     }
 
@@ -458,21 +535,29 @@
             const username = editorInfo.username;
             const level = editorInfo.level || 1;
             const userId = markerElement.dataset.id;
+            const isPlaceholder = editorInfo.isPlaceholder || false;
             
-            log(`Adding label for ${username} to marker with ID ${userId}`);
+            // Only log for real usernames, not placeholders
+            if (!isPlaceholder) {
+                log(`Adding label for ${username} to marker with ID ${userId}`);
+            }
             
             // Ensure marker has position: relative
             if (markerElement.style.position !== 'relative') {
                 markerElement.style.position = 'relative';
-                log(`Set marker position to relative`);
             }
             
             // Check if label already exists
             let existingLabel = markerElement.querySelector('.wme-editor-name-label');
+            const displayText = `${username} (L${level})`;
             if (existingLabel) {
                 // Update existing label
-                if (existingLabel.textContent !== username) {
-                    existingLabel.textContent = username;
+                if (existingLabel.textContent !== displayText) {
+                    existingLabel.textContent = displayText;
+                    // Only log if it's a real username update
+                    if (!isPlaceholder) {
+                        log(`Updated label: ${displayText}`);
+                    }
                 }
                 // Show or hide based on settings
                 if (settings.enabled) {
@@ -480,7 +565,6 @@
                 } else {
                     existingLabel.classList.add('wme-hidden');
                 }
-                log(`Updated existing label for ${username} (L${level})`);
                 return 'updated';
             }
 
@@ -491,7 +575,7 @@
             if (!settings.enabled) {
                 label.classList.add('wme-hidden');
             }
-            label.textContent = username;
+            label.textContent = displayText;
             label.setAttribute('data-username', username);
             label.setAttribute('data-level', level);
             label.setAttribute('data-user-id', userId);
@@ -499,9 +583,10 @@
             // Append to marker
             markerElement.appendChild(label);
             
-            log(`Created new label for ${username}, parent classes: ${markerElement.className}`);
-            log(`Label computed display: ${window.getComputedStyle(label).display}`);
-            log(`Label position: bottom=${window.getComputedStyle(label).bottom}, left=${window.getComputedStyle(label).left}`);
+            // Only log for real usernames
+            if (!isPlaceholder) {
+                log(`Created label: ${displayText}`);
+            }
             
             // Store reference
             if (userId) {
