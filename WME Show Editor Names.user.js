@@ -1,13 +1,20 @@
 // ==UserScript==
 // @name         WME Show Editor Names
-// @namespace    https://greasyfork.org/kid4rm90s
+// @namespace    https://greasyfork.org/users/1087400
 // @version      0.1.0
 // @description  Display usernames below visible editor icons on the map using WME SDK
 // @author       kid4rm90s
 // @include      /^https:\/\/(www|beta)\.waze\.com\/(?!user\/)(.{2,6}\/)?editor\/?.*$/
-// @grant        none
+// @icon         https://www.google.com/s2/favicons?sz=64&domain=waze.com
+// @grant        GM_xmlhttpRequest
+// @grant        GM_info
+// @grant        unsafeWindow
 // @license      MIT
 // @run-at       document-end
+// @connect     raw.githubusercontent.com
+// @require      https://greasyfork.org/scripts/560385/code/WazeToastr.js
+// @downloadURL https://raw.githubusercontent.com/kid4rm90s/WME-Show-Editor-Names/main/WME%20Show%20Editor%20Names.user.js
+// @updateURL https://raw.githubusercontent.com/kid4rm90s/WME-Show-Editor-Names/main/WME%20Show%20Editor%20Names.user.js
 
 // ==/UserScript==
 
@@ -16,9 +23,11 @@
 
 (function() {
     'use strict';
-
-    const SCRIPT_NAME = 'WME Editor Names';
-    const SCRIPT_VERSION = '0.1.0';
+    const updateMessage = `<strong>Version 2.6.6 - 2026-01-09:</strong><br>
+    - Test<br>`;
+    const scriptName = GM_info.script.name;
+    const scriptVersion = GM_info.script.version;
+    const downloadUrl = GM_info.script.downloadURL;
     let wmeSDK;
     let editorLabels = {};
     let updateInterval;
@@ -51,16 +60,16 @@
 
     function log(message) {
         if (debugMode) {
-            console.log(`${SCRIPT_NAME}: ${message}`);
+            console.log(`${scriptName}: ${message}`);
         }
     }
 
     function logError(message) {
-        console.error(`${SCRIPT_NAME}: ${message}`);
+        console.error(`${scriptName}: ${message}`);
     }
 
     function logInfo(message) {
-        console.info(`${SCRIPT_NAME}: ${message}`);
+        console.info(`${scriptName}: ${message}`);
     }
 
     // Inject CSS for editor name labels
@@ -234,7 +243,7 @@
         try {
             wmeSDK = getWmeSdk({
                 scriptId: 'wme-editor-names',
-                scriptName: SCRIPT_NAME
+                scriptName: scriptName
             });
             log('WME SDK initialized');
         } catch (error) {
@@ -562,7 +571,7 @@
                 initAttempts++;
                 setTimeout(bootstrap, 500);
             } else {
-                console.error(`${SCRIPT_NAME}: Failed to initialize - SDK not found`);
+                console.error(`${scriptName}: Failed to initialize - SDK not found`);
             }
         }
         bootstrap();
@@ -574,4 +583,25 @@
             clearInterval(updateInterval);
         }
     });
+      function scriptupdatemonitor() {
+        if (WazeToastr?.Ready) {
+          // Create and start the ScriptUpdateMonitor
+          // For GitHub raw URLs, we need to specify metaUrl explicitly (same as downloadUrl for GitHub)
+          const updateMonitor = new WazeToastr.Alerts.ScriptUpdateMonitor(
+            scriptName,
+            scriptVersion,
+            downloadUrl,
+            GM_xmlhttpRequest,
+            downloadUrl, // metaUrl - for GitHub, use the same URL as it contains the @version tag
+            /@version\s+(.+)/i // metaRegExp - extracts version from @version tag
+          );
+          updateMonitor.start(2, true); // Check every 2 hours, check immediately
+
+          // Show the update dialog for the current version
+          WazeToastr.Interface.ShowScriptUpdate(scriptName, scriptVersion, updateMessage, downloadUrl);
+        } else {
+          setTimeout(scriptupdatemonitor, 250);
+        }
+      }
+      scriptupdatemonitor();
 })();
