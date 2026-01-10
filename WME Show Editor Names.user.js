@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WME Show Editor Names
 // @namespace    https://greasyfork.org/users/1087400
-// @version      0.1.0
+// @version      0.1.1
 // @description  Display usernames below visible editor icons on the map using WME SDK
 // @author       kid4rm90s
 // @include      /^https:\/\/(www|beta)\.waze\.com\/(?!user\/)(.{2,6}\/)?editor\/?.*$/
@@ -141,7 +141,7 @@
                             <small>Displays the username below each visible editor icon on the map.</small>
                         </div>
                         <div class="wme-editor-names-option">
-                            <small>Version: ${SCRIPT_VERSION}</small>
+                            <small>Version: ${scriptVersion}</small>
                         </div>
                     </div>
                 `;
