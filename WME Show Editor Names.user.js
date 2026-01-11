@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         WME Show Editor Names
 // @namespace    https://greasyfork.org/users/1087400
-// @version      0.1.1
-// @description  Display usernames below visible editor icons on the map using WME SDK
+// @version      2026.01.11.01
+// @description  Display usernames below visible editor icons on the map in Waze Map Editor (WME). Includes settings in sidebar
 // @author       kid4rm90s
 // @include      /^https:\/\/(www|beta)\.waze\.com\/(?!user\/)(.{2,6}\/)?editor\/?.*$/
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=waze.com
@@ -11,10 +11,10 @@
 // @grant        unsafeWindow
 // @license      MIT
 // @run-at       document-end
-// @connect     raw.githubusercontent.com
+// @connect      greasyfork.org
 // @require      https://greasyfork.org/scripts/560385/code/WazeToastr.js
-// @downloadURL https://raw.githubusercontent.com/kid4rm90s/WME-Show-Editor-Names/main/WME%20Show%20Editor%20Names.user.js
-// @updateURL https://raw.githubusercontent.com/kid4rm90s/WME-Show-Editor-Names/main/WME%20Show%20Editor%20Names.user.js
+// @downloadURL https://update.greasyfork.org/scripts/562181/WME%20Show%20Editor%20Names.user.js
+// @updateURL https://update.greasyfork.org/scripts/562181/WME%20Show%20Editor%20Names.meta.js
 
 // ==/UserScript==
 
@@ -23,16 +23,20 @@
 
 (function() {
     'use strict';
-    const updateMessage = `<strong>Version 2.6.6 - 2026-01-09:</strong><br>
-    - Test<br>`;
+    const updateMessage = `<strong>Version 2026.01.11.01:</strong><br>
+    - Fixed bugs that prevent display of editor names<br>`;
     const scriptName = GM_info.script.name;
     const scriptVersion = GM_info.script.version;
     const downloadUrl = GM_info.script.downloadURL;
+    const forumURL = 'https://greasyfork.org/scripts/562181-wme-show-editor-names/feedback';
     let wmeSDK;
     let editorLabels = {};
     let updateInterval;
     let missingUsers = new Set(); // Cache for users not found in W.model.users
-    let tooltipTriggered = new Set(); // Track which users we've triggered tooltips for
+    let tooltipCache = {}; // Cache for usernames extracted from tooltips
+    let pendingTooltips = new Map(); // Track userId -> {markerElement, position} associations
+    let tooltipQueue = []; // Queue for tooltip requests
+    let isProcessingTooltip = false; // Flag to prevent simultaneous tooltip processing
     let debugMode = true; // Set to true to see detailed logs
     let settings = {
         enabled: true // Show usernames by default
@@ -79,7 +83,7 @@
         style.textContent = `
             .wme-editor-name-label {
                 position: absolute !important;
-                bottom: -22px !important;
+                bottom: -30px !important;
                 left: 50% !important;
                 transform: translateX(-50%) !important;
                 background-color: rgba(0, 0, 0, 0.9) !important;
@@ -269,8 +273,8 @@
     function setupEditorNameDisplay() {
         log('Setting up editor name display...');
         
-        // Add custom layer for editor names
-        addEditorNameLayer();
+        // Set up tooltip observer to capture username data
+        setupTooltipObserver();
         
         // Update editor labels when map data loads
         if (wmeSDK && wmeSDK.Events) {
@@ -279,7 +283,6 @@
                 eventHandler: () => {
                     // Clear missing users cache when new data loads
                     missingUsers.clear();
-                    tooltipTriggered.clear(); // Clear tooltip trigger tracking
                     log('Map data loaded - clearing missing users cache');
                     updateEditorLabels();
                 }
@@ -301,13 +304,94 @@
         // Set up MutationObserver to watch for new editor markers
         setupMutationObserver();
 
-        // Initial update with delay to ensure DOM is ready
-        setTimeout(updateEditorLabels, 1000);
+        // Initial update with longer delay to ensure WME has loaded all online editor data
+        setTimeout(updateEditorLabels, 3000); // Increased from 1000ms to 3000ms
         
         // Set up periodic updates (every 3 seconds)
         updateInterval = setInterval(updateEditorLabels, 3000);
         
         log('Editor name display setup complete');
+    }
+
+    function setupTooltipObserver() {
+        // Watch for tooltips to capture username data
+        const observer = new MutationObserver((mutations) => {
+            mutations.forEach((mutation) => {
+                mutation.addedNodes.forEach((node) => {
+                    // Get tooltip element
+                    const tooltip = node.nodeName === 'WZ-TOOLTIP-CONTENT' ? node :
+                        (node.querySelector?.('wz-tooltip-content') || null);
+                    
+                    if (!tooltip || pendingTooltips.size === 0) return;
+                    
+                    // Extract username and level from tooltip
+                    const usernameEl = tooltip.querySelector('.editorName--l1rm7, wz-h7');
+                    const levelEl = tooltip.querySelector('.editorLevel--ar4FT, wz-caption');
+                    
+                    if (!usernameEl || !levelEl) return;
+                    
+                    const username = usernameEl.textContent.trim();
+                    const levelText = levelEl.textContent.trim();
+                    const levelMatch = levelText.match(/Level\s+(\d+)/i);
+                    const level = levelMatch ? parseInt(levelMatch[1]) : 1;
+                    
+                    // Find which marker triggered this tooltip by proximity
+                    const tooltipRect = tooltip.getBoundingClientRect();
+                    let closestUserId = null;
+                    let closestDistance = Infinity;
+
+                    pendingTooltips.forEach((data, userId) => {
+                        const markerEl = data.markerElement;
+                        const storedPos = data.position;
+                        const markerRect = markerEl.getBoundingClientRect();
+                        
+                        // Calculate distance using both current position and stored position
+                        const currentDistance = Math.sqrt(
+                            Math.pow(tooltipRect.left - markerRect.left, 2) +
+                            Math.pow(tooltipRect.top - markerRect.top, 2)
+                        );
+                        
+                        // Verify the stored position hasn't changed much (marker still in same place)
+                        const positionDrift = Math.sqrt(
+                            Math.pow(storedPos.x - markerRect.left, 2) +
+                            Math.pow(storedPos.y - markerRect.top, 2)
+                        );
+                        
+                        // Only consider markers that haven't moved (drift < 10px)
+                        if (positionDrift < 10 && currentDistance < closestDistance) {
+                            closestDistance = currentDistance;
+                            closestUserId = userId;
+                        }
+                    });
+
+                    if (closestUserId) {
+                        tooltipCache[closestUserId] = {
+                            username: username,
+                            level: level,
+                            rank: level - 1
+                        };
+                        log(`📝 Cached from tooltip - User ${closestUserId}: ${username} (L${level})`);
+                        pendingTooltips.delete(closestUserId);
+                        
+                        // Mark tooltip processing as complete
+                        isProcessingTooltip = false;
+                        
+                        // Process next item in queue
+                        setTimeout(() => processTooltipQueue(), 100);
+                        
+                        // Trigger an update to refresh this marker's label
+                        setTimeout(() => updateEditorLabels(), 200);
+                    }
+                });
+            });
+        });
+        
+        observer.observe(document.body, {
+            childList: true,
+            subtree: true
+        });
+        
+        log('Tooltip observer started');
     }
 
     function setupMutationObserver() {
@@ -362,7 +446,7 @@
             }
             
             // Clean up old labels first
-            clearOldLabels();
+            cleanupLabels();
             
             // Find all online editor markers in the DOM (excluding saved places)
             const allMarkers = document.querySelectorAll('.onlineEditorMarker--rHUxm, .map-marker[data-id]');
@@ -405,7 +489,7 @@
             log(`Markers: ${editorMarkers.length}, Updated: ${labelsUpdated}, Added: ${labelsAdded}, Failed: ${labelsFailed}`);
 
             // Clean up labels for markers that no longer exist
-            cleanupOrphanedLabels();
+            cleanupLabels();
         } catch (error) {
             logError(`Error updating editor labels: ${error.message}`);
             console.error(error);
@@ -417,71 +501,91 @@
             // Get the user ID from the data-id attribute
             const userId = markerElement.dataset.id;
             if (!userId) {
+                log('⚠️ No userId found on marker');
                 return null;
             }
 
-            // Skip if we've already tried and failed to find this user (no logging)
+            // Skip if we've already tried and failed to find this user
             if (missingUsers.has(userId)) {
                 return null;
             }
 
-            // Try to get info from W.controller.users
-            if (W && W.controller && W.controller.users) {
+            log(`🔍 Looking up user ID: ${userId}`);
+
+            // Try W.controller.users first (preferred API)
+            if (W?.controller?.users) {
                 try {
                     const user = W.controller.users.getObjectById(parseInt(userId));
-                    if (user && user.attributes) {
-                        const username = user.attributes.userName || user.attributes.username;
-                        const rank = user.attributes.rank ?? 0;
-                        const level = rank + 1;
-                        log(`Found user via W.controller.users: ${username} (ID: ${userId}, Level: ${level})`);
-                        return {
-                            username: username,
-                            userId: userId,
-                            rank: rank,
-                            level: level
-                        };
+                    const userData = normalizeUserData(user, userId);
+                    if (userData) {
+                        log(`✅ Found user via W.controller.users: ${userData.username} (ID: ${userId}, Level: ${userData.level})`);
+                        return userData;
                     }
                 } catch (e) {
-                    // Not available
+                    log(`❌ Error from W.controller.users: ${e.message}`);
                 }
             }
 
-            // Fallback: Use W.model.users to get editor information
-            if (W && W.model && W.model.users) {
-                const user = W.model.users.getObjectById(parseInt(userId));
-                if (user && user.attributes) {
-                    const username = user.attributes.userName || user.attributes.username;
-                    const rank = user.attributes.rank ?? 0;
-                    const level = rank + 1;
-                    log(`Found user via W.model.users: ${username} (ID: ${userId}, Level: ${level})`);
-                    return {
-                        username: username,
-                        userId: userId,
-                        rank: rank,
-                        level: level
-                    };
+            // Fallback: W.model.users.objects (direct object access)
+            if (W?.model?.users?.objects) {
+                const user = W.model.users.objects[userId];
+                const userData = normalizeUserData(user, userId);
+                if (userData) {
+                    log(`✅ Found user via W.model.users.objects: ${userData.username} (ID: ${userId}, Level: ${userData.level})`);
+                    return userData;
                 }
             }
 
-            // Try to extract level from the SVG image filename
+            // Check if it's the current logged-in user
+            if (W?.loginManager?.user && W.loginManager.user.id === parseInt(userId)) {
+                const userData = {
+                    username: W.loginManager.user.userName,
+                    userId: userId,
+                    rank: W.loginManager.user.rank,
+                    level: W.loginManager.user.rank + 1
+                };
+                log(`✅ Found current logged-in user: ${userData.username} (ID: ${userId}, Level: ${userData.level})`);
+                return userData;
+            }
+
+            // Check tooltip cache
+            if (tooltipCache[userId]) {
+                const cached = tooltipCache[userId];
+                log(`✅ Found user in tooltip cache: ${cached.username} (ID: ${userId}, Level: ${cached.level})`);
+                return {
+                    username: cached.username,
+                    userId: userId,
+                    rank: cached.rank,
+                    level: cached.level
+                };
+            }
+
+            // If user model not populated yet, defer
+            if (W?.model?.users && W.model.users.length < 2) {
+                log('W.model.users not populated yet, skipping placeholder creation.');
+                return null;
+            }
+
+            // Try to trigger tooltip to get username
+            if (triggerTooltipForUser(markerElement, userId)) {
+                log(`🎯 Triggered tooltip for user ${userId}, will retry on next update`);
+                return null;
+            }
+
+            // Extract level from SVG image filename as fallback
             const img = markerElement.querySelector('img[src*="/L"]');
             let level = 1;
-            if (img && img.src) {
+            if (img?.src) {
                 const levelMatch = img.src.match(/\/L(\d+)\.svg/);
                 if (levelMatch) {
                     level = parseInt(levelMatch[1]);
                 }
             }
             
-            // Try to trigger tooltip to load user data (only once per user per session)
-            if (!tooltipTriggered.has(userId)) {
-                tooltipTriggered.add(userId);
-                triggerTooltipForUser(markerElement, userId);
-                log(`First time seeing user ${userId}, triggering tooltip to load data`);
-            }
+            // Mark as missing so we don't keep trying API lookups
+            missingUsers.add(userId);
             
-            // Return a placeholder with the extracted level
-            // Don't cache this user so we keep trying to find the real username
+            // Return placeholder (will be replaced when tooltip succeeds)
             return {
                 username: `User ${userId}`,
                 userId: userId,
@@ -497,37 +601,115 @@
         }
     }
 
-    // Trigger tooltip to load user data
-    function triggerTooltipForUser(markerElement, userId) {
+    // Process tooltip queue one at a time
+    function processTooltipQueue() {
+        // Skip if already processing or queue is empty
+        if (isProcessingTooltip || tooltipQueue.length === 0) {
+            return;
+        }
+        
+        const { markerElement, userId } = tooltipQueue.shift();
+        
+        // Check if we still need this tooltip (might be cached already)
+        if (tooltipCache[userId]) {
+            log(`✓ User ${userId} already cached, skipping queue item`);
+            // Process next item
+            setTimeout(() => processTooltipQueue(), 50);
+            return;
+        }
+        
+        isProcessingTooltip = true;
+        log(`⚙️ Processing tooltip queue for user ${userId} (${tooltipQueue.length} remaining)`);
+        
         try {
-            // Find the tooltip target element
             const tooltipTarget = markerElement.querySelector('wz-tooltip-target');
             if (tooltipTarget) {
-                // Dispatch a mouseenter event to trigger the tooltip
+                // Store marker position for accurate matching
+                const markerRect = markerElement.getBoundingClientRect();
+                pendingTooltips.set(userId, {
+                    markerElement: markerElement,
+                    position: { x: markerRect.left, y: markerRect.top }
+                });
+                
+                // Trigger hover
                 const mouseEnterEvent = new MouseEvent('mouseenter', {
                     bubbles: true,
-                    cancelable: true,
-                    view: window
+                    cancelable: true
                 });
                 tooltipTarget.dispatchEvent(mouseEnterEvent);
                 
-                // Keep tooltip open longer to give WME time to load data
+                // Close tooltip after extraction
                 setTimeout(() => {
                     const mouseLeaveEvent = new MouseEvent('mouseleave', {
                         bubbles: true,
-                        cancelable: true,
-                        view: window
+                        cancelable: true
                     });
                     tooltipTarget.dispatchEvent(mouseLeaveEvent);
-                }, 500); // Increased from 100ms to 500ms
-                
-                log(`Triggered tooltip for user ${userId}`);
+                    
+                    // Timeout handler if tooltip not captured
+                    setTimeout(() => {
+                        if (pendingTooltips.has(userId)) {
+                            pendingTooltips.delete(userId);
+                            isProcessingTooltip = false;
+                            log(`⏱️ Tooltip timeout for user ${userId}`);
+                            // Process next item
+                            setTimeout(() => processTooltipQueue(), 50);
+                        }
+                    }, 400);
+                }, 500);
             } else {
-                log(`No tooltip target found for user ${userId}`);
+                // No tooltip target found, move to next
+                isProcessingTooltip = false;
+                setTimeout(() => processTooltipQueue(), 50);
             }
         } catch (e) {
-            logError(`Error triggering tooltip for user ${userId}: ${e.message}`);
+            pendingTooltips.delete(userId);
+            isProcessingTooltip = false;
+            log(`❌ Error processing tooltip queue for user ${userId}: ${e.message}`);
+            // Process next item
+            setTimeout(() => processTooltipQueue(), 50);
         }
+    }
+
+    // Trigger tooltip to extract username (adds to queue)
+    function triggerTooltipForUser(markerElement, userId) {
+        // Skip if already processing this user or cached
+        if (pendingTooltips.has(userId) || tooltipCache[userId]) {
+            return false;
+        }
+        
+        // Check if already in queue
+        const alreadyQueued = tooltipQueue.some(item => item.userId === userId);
+        if (alreadyQueued) {
+            return false;
+        }
+        
+        // Add to queue
+        tooltipQueue.push({ markerElement, userId });
+        log(`➕ Added user ${userId} to tooltip queue (queue size: ${tooltipQueue.length})`);
+        
+        // Start processing if not already running
+        if (!isProcessingTooltip) {
+            setTimeout(() => processTooltipQueue(), 100);
+        }
+        
+        return true;
+    }
+
+    // Helper: normalize user data from various sources
+    function normalizeUserData(user, userId) {
+        if (!user || !user.attributes) return null;
+        
+        const username = user.attributes.userName || user.attributes.username;
+        if (!username) return null;
+        
+        const rank = user.attributes.rank ?? 0;
+        return {
+            username,
+            userId,
+            rank,
+            level: rank + 1
+        };
     }
 
     function addUsernameLabel(markerElement, editorInfo) {
@@ -568,13 +750,15 @@
                 return 'updated';
             }
 
-            // Create label element (no icon needed - WME already shows the level icon)
+            // Create label element
             const label = document.createElement('div');
             label.className = 'wme-editor-name-label';
-            // Add hidden class if disabled
+
+            // Set visibility based on current settings, preventing hidden labels on creation
             if (!settings.enabled) {
                 label.classList.add('wme-hidden');
             }
+
             label.textContent = displayText;
             label.setAttribute('data-username', username);
             label.setAttribute('data-level', level);
@@ -605,38 +789,27 @@
         }
     }
 
-    function cleanupOrphanedLabels() {
-        // Remove labels whose parent containers no longer exist in DOM
-        Object.keys(editorLabels).forEach(username => {
-            const labelInfo = editorLabels[username];
-            if (labelInfo && labelInfo.label && !document.body.contains(labelInfo.label)) {
-                delete editorLabels[username];
-            }
-        });
-    }
-
-    function clearOldLabels() {
-        // Remove labels that are no longer needed
+    function cleanupLabels() {
+        // Unified cleanup: remove labels that no longer exist or whose markers are gone
         const labels = document.querySelectorAll('.wme-editor-name-label');
         labels.forEach(label => {
-            // Check if the parent marker still exists in the DOM
             const parentMarker = label.parentElement;
-            if (!parentMarker || !document.body.contains(parentMarker)) {
-                const userId = label.getAttribute('data-user-id');
-                if (userId && editorLabels[userId]) {
-                    delete editorLabels[userId];
-                }
-                label.remove();
-                return;
-            }
+            const userId = label.getAttribute('data-user-id');
             
-            // Check if the parent marker still has the data-id attribute
-            if (!parentMarker.dataset || !parentMarker.dataset.id) {
-                const userId = label.getAttribute('data-user-id');
+            // Remove if parent marker is gone or doesn't have data-id
+            if (!parentMarker || !document.body.contains(parentMarker) || !parentMarker.dataset?.id) {
                 if (userId && editorLabels[userId]) {
                     delete editorLabels[userId];
                 }
                 label.remove();
+            }
+        });
+        
+        // Clean up editorLabels object for labels no longer in DOM
+        Object.keys(editorLabels).forEach(userId => {
+            const labelInfo = editorLabels[userId];
+            if (labelInfo?.label && !document.body.contains(labelInfo.label)) {
+                delete editorLabels[userId];
             }
         });
     }
@@ -672,21 +845,25 @@
         if (WazeToastr?.Ready) {
           // Create and start the ScriptUpdateMonitor
           // For GitHub raw URLs, we need to specify metaUrl explicitly (same as downloadUrl for GitHub)
-          const updateMonitor = new WazeToastr.Alerts.ScriptUpdateMonitor(
-            scriptName,
-            scriptVersion,
-            downloadUrl,
-            GM_xmlhttpRequest,
-            downloadUrl, // metaUrl - for GitHub, use the same URL as it contains the @version tag
-            /@version\s+(.+)/i // metaRegExp - extracts version from @version tag
-          );
+      const updateMonitor = new WazeToastr.Alerts.ScriptUpdateMonitor(scriptName, scriptVersion, downloadUrl, GM_xmlhttpRequest);
           updateMonitor.start(2, true); // Check every 2 hours, check immediately
 
           // Show the update dialog for the current version
-          WazeToastr.Interface.ShowScriptUpdate(scriptName, scriptVersion, updateMessage, downloadUrl);
+          WazeToastr.Interface.ShowScriptUpdate(scriptName, scriptVersion, updateMessage, downloadUrl, forumURL);
         } else {
           setTimeout(scriptupdatemonitor, 250);
         }
       }
       scriptupdatemonitor();
 })();
+/******Changelog********
+ * v1.5.3 - 2024-06-10
+    - Fixed name swapping issue for overlapping editor markers
+    - Implemented tooltip queue system for sequential processing
+    - Improved proximity matching with position drift detection
+    - Fixed MouseEvent construction errors in userscript context
+    - Code cleanup: removed deprecated API calls and redundant functions
+    - Added helper function for user data normalization
+    - Consolidated duplicate cleanup logic
+    - Properly implemented missingUsers cache to avoid redundant lookups
+ */
