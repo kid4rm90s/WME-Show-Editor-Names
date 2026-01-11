@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WME Show Editor Names
 // @namespace    https://greasyfork.org/users/1087400
-// @version      2026.01.11.01
+// @version      2026.01.11.02
 // @description  Display usernames below visible editor icons on the map in Waze Map Editor (WME). Includes settings in sidebar
 // @author       kid4rm90s
 // @include      /^https:\/\/(www|beta)\.waze\.com\/(?!user\/)(.{2,6}\/)?editor\/?.*$/
@@ -23,7 +23,7 @@
 
 (function() {
     'use strict';
-    const updateMessage = `<strong>Version 2026.01.11.01:</strong><br>
+    const updateMessage = `<strong>Version 2026.01.11.02:</strong><br>
     - Fixed bugs that prevent display of editor names<br>`;
     const scriptName = GM_info.script.name;
     const scriptVersion = GM_info.script.version;
