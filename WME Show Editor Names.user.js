@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WME Show Editor Names
 // @namespace    https://greasyfork.org/users/1087400
-// @version      2026.01.11.04
+// @version      2026.01.11.05
 // @description  Display usernames below visible editor icons on the map in Waze Map Editor (WME). Includes settings in sidebar
 // @author       kid4rm90s
 // @include      /^https:\/\/(www|beta)\.waze\.com\/(?!user\/)(.{2,6}\/)?editor\/?.*$/
@@ -27,7 +27,8 @@
     - now Hardhat icons can be used instead of native editor icons<br>
     - added special hardhat icons for specific users<br>
     - added option to show/hide current user's position marker<br>
-    - Proper editor name detection<br>`;
+    - Proper editor name detection<br>
+    - Minor improvements and bug fixes with dark mode support<br>`;
   const scriptName = GM_info.script.name;
   const scriptVersion = GM_info.script.version;
   const downloadUrl = GM_info.script.downloadURL;
@@ -163,8 +164,8 @@
       return `
         <label style="display:block; margin:3px 0; padding: 3px; background: ${isChecked ? '#e8f5e9' : 'transparent'};">
           <input type="checkbox" class="wme-special-user-checkbox" value="${username}" ${isChecked} data-username="${username}">
-          <span style="font-weight: ${isChecked ? 'bold' : 'normal'};">${username}</span>
-          ${assignedIcon ? `<small style="color:#666; margin-left:5px;">(${assignedIcon})</small>` : ''}
+          <span style="font-weight: ${isChecked ? 'bold' : 'normal'}; color: var(--primary-text-color, #000);">${username}</span>
+          ${assignedIcon ? `<small style="color: var(--secondary-text-color, #666); margin-left:5px;">(${assignedIcon})</small>` : ''}
         </label>
       `;
     }).join('');
@@ -1647,7 +1648,13 @@
   scriptupdatemonitor();
 })();
 /******Changelog********
- * 
+ *  * v2026.01.11.04 - 2026-01-11
+now Hardhat icons can be used instead of native editor icons<br>
+    - added special hardhat icons for specific users<br>
+    - added option to show/hide current user's position marker<br>
+    - Proper editor name detection<br>
+    - Minor bug fixes and improvements and dark mode support<br>
+
  * v2026.01.11.04 - 2026-01-11
 now Hardhat icons can be used instead of native editor icons<br>
     - added special hardhat icons for specific users<br>
